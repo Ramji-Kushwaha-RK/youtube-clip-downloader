@@ -22,4 +22,4 @@ RUN mkdir -p /tmp/clips \
 
 EXPOSE 10000
 
-CMD ["gunicorn", "--workers", "1", "--threads", "2", "--timeout", "660", "--bind", "0.0.0.0:10000", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "1", "--threads", "4", "--timeout", "900", "app:app"]
