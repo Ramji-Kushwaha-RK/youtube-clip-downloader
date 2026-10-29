@@ -14,15 +14,14 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024  # अधिकतम 16 KB JSON पेलोड
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
 
-# Environment Variables (Render में सेट करने के लिए)
 TURNSTILE_SECRET_KEY = os.environ.get("CLOUDFLARE_SECRET_KEY", "").strip()
+YOUTUBE_COOKIES_TEXT = os.environ.get("YOUTUBE_COOKIES", "").strip()
 ALLOWED_ORIGIN = os.environ.get(
     "ALLOWED_ORIGIN", "https://rkstudiohub.blogspot.com"
 ).strip().rstrip("/")
 
-# CORS सेटअप: आपके Blogger पेज को अनुमति देने के लिए
 CORS(
     app,
     resources={
@@ -38,11 +37,12 @@ CLIP_DIR = Path("/tmp/clips")
 CLIP_DIR.mkdir(parents=True, exist_ok=True)
 os.chmod(CLIP_DIR, 0o700)
 
-MAX_CLIP_SECONDS = 1800          # अधिकतम 30 मिनट की क्लिप
-MAX_PROCESS_SECONDS = 900       # प्रोसेसिंग टाइमआउट (15 मिनट)
-MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB सीमा
-FILE_TTL_SECONDS = 30 * 60      # 30 मिनट में फाइल अपने-आप डिलीट होगी
-MAX_REQUESTS_PER_HOUR = 5      # प्रति घंटा प्रति IP अधिकतम 5 अनुरोध
+# आपकी नई सेटिंग्स: 30 मिनट क्लिप और प्रति घंटा 5 अनुरोध
+MAX_CLIP_SECONDS = 1800                  # अधिकतम 30 मिनट (1800 सेकंड)
+MAX_PROCESS_SECONDS = 900                # प्रोसेसिंग टाइमआउट (15 मिनट)
+MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB फाइल सीमा
+FILE_TTL_SECONDS = 30 * 60               # 30 मिनट बाद फाइल डिलीट
+MAX_REQUESTS_PER_HOUR = 5                # प्रति IP प्रति घंटा 5 रिक्वेस्ट
 
 ALLOWED_FORMATS = {"mp4", "mp3", "webm", "m4a"}
 ALLOWED_QUALITIES = {"360", "480", "720", "1080"}
@@ -62,7 +62,6 @@ job_lock = threading.Lock()
 
 
 def get_client_ip():
-    """Render के प्रॉक्सी के पीछे से असली यूजर IP सुरक्षित रूप से निकालें।"""
     xff = request.headers.get("X-Forwarded-For", "")
     if xff:
         return xff.split(",")[0].strip()[:64]
@@ -70,7 +69,6 @@ def get_client_ip():
 
 
 def parse_time(value):
-    """HH:MM:SS, MM:SS या सेकंड को सुरक्षित रूप से पूर्णांक (seconds) में बदलें।"""
     if isinstance(value, (int, float)):
         value = str(int(value))
     if not isinstance(value, str):
@@ -82,7 +80,7 @@ def parse_time(value):
 
     parts = clean_val.split(":")
     if not 1 <= len(parts) <= 3:
-        raise ValueError("समय का फॉर्मेट सही नहीं है (उदा. 00:01:30)।")
+        raise ValueError("समय का फॉर्मेट सही नहीं है (उदा. 00:02:00)।")
 
     if not all(part.isdigit() for part in parts):
         raise ValueError("समय में केवल अंक (0-9) और कोलन (:) का प्रयोग करें।")
@@ -105,19 +103,10 @@ def parse_time(value):
 
 
 def normalize_and_validate_youtube_url(url):
-    """
-    केवल असली YouTube Video, Shorts और Live URLs को अनुमति दें।
-    किसी भी स्क्रिप्ट, प्लेलिस्ट या अवांछित पैरामीटर को हटाकर साफ URL लौटाएँ।
-    """
     if not isinstance(url, str) or len(url) > 200:
         return None
 
     url = url.strip()
-    # किसी भी खतरनाक कैरेक्टर या कमांड फ्लैग को तुरंत ब्लॉक करें
-    if url.startswith("-") or any(c in url for c in ["<", ">", '"', "'", ";", "|", "&", "`", "$", "\n", "\r"]):
-        # ध्यान दें: watch?v=...&feature=... हो सकता है, इसलिए पहले urlparse करेंगे
-        pass
-
     try:
         parsed = urlparse(url)
     except ValueError:
@@ -137,18 +126,15 @@ def normalize_and_validate_youtube_url(url):
     path = parsed.path or ""
 
     if host == "youtu.be":
-        # Format: https://youtu.be/VIDEO_ID
         parts = [p for p in path.split("/") if p]
         if len(parts) == 1 and VIDEO_ID_RE.fullmatch(parts[0]):
             video_id = parts[0]
     else:
-        # Format 1: /watch?v=VIDEO_ID
         if path == "/watch":
             qs = parse_qs(parsed.query)
             v_list = qs.get("v", [])
             if len(v_list) == 1 and VIDEO_ID_RE.fullmatch(v_list[0]):
                 video_id = v_list[0]
-        # Format 2: /shorts/VIDEO_ID या /live/VIDEO_ID
         elif path.startswith("/shorts/") or path.startswith("/live/"):
             parts = [p for p in path.split("/") if p]
             if len(parts) == 2 and parts[0] in ("shorts", "live") and VIDEO_ID_RE.fullmatch(parts[1]):
@@ -157,12 +143,10 @@ def normalize_and_validate_youtube_url(url):
     if not video_id:
         return None
 
-    # हमेशा साफ और सुरक्षित मानक URL लौटाएँ ताकि कोई अतिरिक्त पैरामीटर yt-dlp तक न पहुँचे
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
 def verify_turnstile(token):
-    """Cloudflare Turnstile CAPTCHA टोकन की सर्वर-साइड जाँच करें।"""
     if not TURNSTILE_SECRET_KEY:
         app.logger.error("CLOUDFLARE_SECRET_KEY सेट नहीं है।")
         return False
@@ -231,9 +215,9 @@ def cleanup_old_files():
                     if now - path.stat().st_mtime >= FILE_TTL_SECONDS:
                         path.unlink(missing_ok=True)
             except OSError:
-                app.logger.warning("Temporary-file cleanup failed.")
+                pass
     except OSError:
-        app.logger.warning("Could not inspect temporary storage.")
+        pass
 
 
 def cleanup_loop():
@@ -268,25 +252,73 @@ def health():
     return jsonify({"status": "ok"})
 
 
+def build_ytdlp_command(output_template, start, end, file_type, quality, clean_url, player_client, cookie_file=None):
+    cmd = [
+        "yt-dlp",
+        "--ignore-config",
+        "--no-playlist",
+        "--no-warnings",
+        "--no-progress",
+        "--no-continue",
+        "--no-part",
+        "--geo-bypass",
+        "--socket-timeout", "20",
+        "--retries", "2",
+        "--fragment-retries", "2",
+        "--max-filesize", "500M",
+        "--extractor-args", f"youtube:player_client={player_client}",
+        "--download-sections", f"*{start}-{end}",
+        "--output", output_template,
+    ]
+
+    if cookie_file and cookie_file.is_file():
+        cmd += ["--cookies", str(cookie_file)]
+
+    if file_type == "mp3":
+        cmd += [
+            "-f", "bestaudio/best",
+            "-x", "--audio-format", "mp3",
+            "--audio-quality", "192K",
+        ]
+    elif file_type == "m4a":
+        cmd += [
+            "-f", "bestaudio[ext=m4a]/bestaudio/best",
+            "-x", "--audio-format", "m4a",
+        ]
+    elif file_type == "webm":
+        cmd += [
+            "-f",
+            f"bv*[height<={quality}][ext=webm]+ba[ext=webm]/b[height<={quality}][ext=webm]/bv*[height<={quality}]+ba/b[height<={quality}]/best",
+            "--merge-output-format", "webm",
+        ]
+    else:
+        cmd += [
+            "-f",
+            f"bv*[height<={quality}][ext=mp4]+ba[ext=m4a]/b[height<={quality}][ext=mp4]/bv*[height<={quality}]+ba/b[height<={quality}]/best",
+            "--merge-output-format", "mp4",
+        ]
+
+    cmd.append(clean_url)
+    return cmd
+
+
 @app.post("/api/clip")
 def create_clip():
     if rate_limited():
         return jsonify({
-            "error": "आपने बहुत अधिक अनुरोध किए हैं। कृपया 1 घंटे बाद पुनः प्रयास करें।"
+            "error": "आपकी प्रति घंटा 5 क्लिप की सीमा पूरी हो गई है। कृपया 1 घंटे बाद पुनः प्रयास करें।"
         }), 429
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "अमान्य डेटा फॉर्मेट। कृपया पेज रिफ्रेश करके प्रयास करें।"}), 400
 
-    # 1. Cloudflare Turnstile CAPTCHA जाँच
     token = data.get("cf_token", "")
     if not verify_turnstile(token):
         return jsonify({
-            "error": "सुरक्षा जाँच (CAPTCHA) विफल रही या समाप्त हो गई। कृपया दोबारा टिक करके प्रयास करें।"
+            "error": "सुरक्षा जाँच (CAPTCHA) विफल रही। कृपया दोबारा टिक करके प्रयास करें।"
         }), 403
 
-    # 2. YouTube URL जाँच (केवल Video, Shorts, Live)
     raw_url = data.get("url", "")
     clean_url = normalize_and_validate_youtube_url(raw_url)
     if not clean_url:
@@ -294,17 +326,15 @@ def create_clip():
             "error": "कृपया केवल मान्य YouTube Video, Shorts या Live का HTTPS लिंक ही डालें।"
         }), 400
 
-    # 3. फॉर्मेट और क्वालिटी जाँच
     file_type = str(data.get("format", "mp4")).lower().strip()
     quality = str(data.get("quality", "720")).lower().replace("p", "").strip()
 
     if file_type not in ALLOWED_FORMATS:
-        return jsonify({"error": "चयनित फाइल फॉर्मेट मान्य नहीं है (केवल MP4, MP3, M4A, WebM)।"}), 400
+        return jsonify({"error": "चयनित फाइल फॉर्मेट मान्य नहीं है।"}), 400
 
     if quality not in ALLOWED_QUALITIES:
-        return jsonify({"error": "चयनित वीडियो क्वालिटी मान्य नहीं है (केवल 360p, 480p, 720p, 1080p)।"}), 400
+        return jsonify({"error": "चयनित वीडियो क्वालिटी मान्य नहीं है।"}), 400
 
-    # 4. समय सीमा जाँच
     try:
         start = parse_time(data.get("start", "00:00:00"))
         end = parse_time(data.get("end", "00:00:30"))
@@ -315,9 +345,8 @@ def create_clip():
         return jsonify({"error": "समाप्ति समय (End Time), शुरुआती समय (Start Time) से अधिक होना चाहिए।"}), 400
 
     if end - start > MAX_CLIP_SECONDS:
-        return jsonify({"error": "एक बार में अधिकतम 10 मिनट (600 सेकंड) तक की ही क्लिप काटी जा सकती है।"}), 400
+        return jsonify({"error": "एक बार में अधिकतम 30 मिनट (1800 सेकंड) तक की ही क्लिप काटी जा सकती है।"}), 400
 
-    # 5. सर्वर लोड सुरक्षा: एक समय में एक प्रोसेसिंग जॉब
     if not job_lock.acquire(blocking=False):
         return jsonify({
             "error": "सर्वर अभी एक अन्य क्लिप तैयार कर रहा है। कृपया 30-40 सेकंड बाद पुनः प्रयास करें।"
@@ -332,72 +361,66 @@ def create_clip():
         job_dir = CLIP_DIR / job_id
         job_dir.mkdir(mode=0o700)
 
+        cookie_file = None
+        if YOUTUBE_COOKIES_TEXT:
+            cookie_file = job_dir / "cookies.txt"
+            cookie_file.write_text(YOUTUBE_COOKIES_TEXT, encoding="utf-8")
+            os.chmod(cookie_file, 0o600)
+
         output_template = str(job_dir / "clip.%(ext)s")
 
-        cmd = [
-            "yt-dlp",
-            "--ignore-config",
-            "--no-playlist",
-            "--no-warnings",
-            "--no-progress",
-            "--no-continue",
-            "--no-part",
-            "--socket-timeout", "15",
-            "--retries", "2",
-            "--fragment-retries", "2",
-            "--max-filesize", "500M",
-            "--download-sections", f"*{start}-{end}",
-            "--output", output_template,
+        # सभी चैनलों की वीडियो चलाने के लिए 3 अलग-अलग मोबाइल/टीवी क्लाइंट्स से ऑटो-रिट्राई
+        client_strategies = [
+            "ios,web_creator",
+            "android,tv_embedded",
+            "mweb,web",
         ]
 
-        if file_type == "mp3":
-            cmd += [
-                "-f", "bestaudio/best",
-                "-x", "--audio-format", "mp3",
-                "--audio-quality", "192K",
-            ]
-        elif file_type == "m4a":
-            cmd += [
-                "-f", "bestaudio[ext=m4a]/bestaudio/best",
-                "-x", "--audio-format", "m4a",
-            ]
-        elif file_type == "webm":
-            cmd += [
-                "-f",
-                f"bv*[height<={quality}][ext=webm]+ba[ext=webm]/b[height<={quality}][ext=webm]/bv*[height<={quality}]+ba/b[height<={quality}]",
-                "--merge-output-format", "webm",
-            ]
-        else:
-            cmd += [
-                "-f",
-                f"bv*[height<={quality}][ext=mp4]+ba[ext=m4a]/b[height<={quality}][ext=mp4]/bv*[height<={quality}]+ba/b[height<={quality}]",
-                "--merge-output-format", "mp4",
-            ]
+        last_stderr = ""
+        success = False
 
-        cmd.append(clean_url)
+        for client_str in client_strategies:
+            cmd = build_ytdlp_command(
+                output_template, start, end, file_type, quality, clean_url, client_str, cookie_file
+            )
 
-        result = subprocess.run(
-            cmd,
-            cwd=str(job_dir),
-            capture_output=True,
-            text=True,
-            timeout=MAX_PROCESS_SECONDS,
-            check=False,
-            shell=False,
-            env={
-                "PATH": "/usr/local/bin:/usr/bin:/bin",
-                "HOME": "/tmp",
-                "TMPDIR": str(job_dir),
-                "PYTHONUNBUFFERED": "1",
-            },
-        )
+            result = subprocess.run(
+                cmd,
+                cwd=str(job_dir),
+                capture_output=True,
+                text=True,
+                timeout=MAX_PROCESS_SECONDS,
+                check=False,
+                shell=False,
+                env={
+                    "PATH": "/usr/local/bin:/usr/bin:/bin",
+                    "HOME": "/tmp",
+                    "TMPDIR": str(job_dir),
+                    "PYTHONUNBUFFERED": "1",
+                },
+            )
 
-        if result.returncode != 0:
-            app.logger.warning("yt-dlp failed with code %s", result.returncode)
+            if result.returncode == 0:
+                success = True
+                break
+            else:
+                last_stderr = (result.stderr or "")[-500:]
+                app.logger.warning("Strategy [%s] failed: %s", client_str, last_stderr)
+
+        if cookie_file and cookie_file.exists():
+            cookie_file.unlink(missing_ok=True)
+
+        if not success:
             shutil.rmtree(job_dir, ignore_errors=True)
             job_dir = None
+
+            if "Sign in to confirm" in last_stderr or "bot" in last_stderr.lower():
+                return jsonify({
+                    "error": "YouTube ने क्लाउड सर्वर IP पर बॉट-जाँच (Bot Check) लगाई है। इसे 100% खोलने के लिए Render Environment में YOUTUBE_COOKIES जोड़ें।"
+                }), 422
+
             return jsonify({
-                "error": "यह वीडियो डाउनलोड के लिए उपलब्ध नहीं है या YouTube द्वारा प्रतिबंधित है।"
+                "error": "इस वीडियो की स्ट्रीम निकालने में YouTube सर्वर ने मना किया। कृपया अलग क्वालिटी (जैसे 720p) या दूसरा लिंक आजमाएँ।"
             }), 422
 
         candidates = [
@@ -410,7 +433,7 @@ def create_clip():
         if not candidates:
             shutil.rmtree(job_dir, ignore_errors=True)
             job_dir = None
-            return jsonify({"error": "क्लिप तैयार नहीं हो सकी। कृपया छोटा समय चुनें।"}), 500
+            return jsonify({"error": "क्लिप तैयार नहीं हो सकी। कृपया समय की जाँच करें।"}), 500
 
         output_file = max(candidates, key=lambda p: p.stat().st_size)
         file_size = output_file.stat().st_size
@@ -418,7 +441,7 @@ def create_clip():
         if file_size > MAX_FILE_SIZE_BYTES:
             shutil.rmtree(job_dir, ignore_errors=True)
             job_dir = None
-            return jsonify({"error": "तैयार क्लिप 300 MB की अधिकतम सीमा से बड़ी है। कृपया कम क्वालिटी या छोटा समय चुनें।"}), 413
+            return jsonify({"error": "तैयार क्लिप 500 MB से बड़ी है। कृपया कम क्वालिटी चुनें।"}), 413
 
         return jsonify({
             "message": "आपकी क्लिप सफलतापूर्वक तैयार हो गई है!",
@@ -432,13 +455,13 @@ def create_clip():
     except subprocess.TimeoutExpired:
         if job_dir:
             shutil.rmtree(job_dir, ignore_errors=True)
-        return jsonify({"error": "प्रोसेसिंग की समय-सीमा समाप्त हो गई। कृपया छोटी क्लिप या कम क्वालिटी आजमाएँ।"}), 504
+        return jsonify({"error": "प्रोसेसिंग का समय समाप्त हो गया। कृपया छोटी क्लिप या 720p क्वालिटी चुनें।"}), 504
 
     except Exception:
         app.logger.error("Unexpected error during processing.")
         if job_dir:
             shutil.rmtree(job_dir, ignore_errors=True)
-        return jsonify({"error": "सर्वर में आंतरिक समस्या आई। कृपया कुछ देर बाद प्रयास करें।"}), 500
+        return jsonify({"error": "सर्वर में आंतरिक समस्या आई। कृपया पुनः प्रयास करें।"}), 500
 
     finally:
         job_lock.release()
