@@ -38,11 +38,11 @@ CLIP_DIR = Path("/tmp/clips")
 CLIP_DIR.mkdir(parents=True, exist_ok=True)
 os.chmod(CLIP_DIR, 0o700)
 
-MAX_CLIP_SECONDS = 600          # अधिकतम 10 मिनट की क्लिप
-MAX_PROCESS_SECONDS = 480       # प्रोसेसिंग टाइमआउट (8 मिनट)
-MAX_FILE_SIZE_BYTES = 300 * 1024 * 1024  # 300 MB सीमा
+MAX_CLIP_SECONDS = 1800          # अधिकतम 30 मिनट की क्लिप
+MAX_PROCESS_SECONDS = 900       # प्रोसेसिंग टाइमआउट (15 मिनट)
+MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB सीमा
 FILE_TTL_SECONDS = 30 * 60      # 30 मिनट में फाइल अपने-आप डिलीट होगी
-MAX_REQUESTS_PER_HOUR = 10      # प्रति घंटा प्रति IP अधिकतम 10 अनुरोध
+MAX_REQUESTS_PER_HOUR = 5      # प्रति घंटा प्रति IP अधिकतम 5 अनुरोध
 
 ALLOWED_FORMATS = {"mp4", "mp3", "webm", "m4a"}
 ALLOWED_QUALITIES = {"360", "480", "720", "1080"}
