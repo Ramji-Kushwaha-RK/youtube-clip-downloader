@@ -343,11 +343,10 @@ def create_clip():
             "--no-continue",
             "--no-part",
             "--socket-timeout", "15",
-            "--retries", "1",
-            "--fragment-retries", "1",
-            "--max-filesize", "300M",
+            "--retries", "2",
+            "--fragment-retries", "2",
+            "--max-filesize", "500M",
             "--download-sections", f"*{start}-{end}",
-            "--force-keyframes-at-cuts",
             "--output", output_template,
         ]
 
