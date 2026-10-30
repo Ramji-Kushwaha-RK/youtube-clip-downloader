@@ -312,8 +312,8 @@ def build_ytdlp_command(output_template, start, end, file_type, quality, clean_u
     cmd = [
         "yt-dlp",
         "--ignore-config",
+        "--verbose",
         "--no-playlist",
-        "--no-warnings",
         "--no-progress",
         "--no-continue",
         "--no-part",
@@ -499,11 +499,30 @@ def create_clip():
             )
 
             if result.returncode == 0:
-                success = True
-                break
-            else:
-                last_stderr = (result.stderr or "")[-1500:]
-                app.logger.warning("Strategy [%s] failed: %s", client_str, last_stderr)
+    success = True
+    break
+else:
+    last_stderr = (result.stderr or "")[-10000:]
+
+    app.logger.warning(
+        "Strategy [%s] failed. Return code: %s",
+        client_str,
+        result.returncode
+    )
+
+    if result.stdout:
+        app.logger.warning(
+            "Strategy [%s] STDOUT:\n%s",
+            client_str,
+            result.stdout[-5000:]
+        )
+
+    if result.stderr:
+        app.logger.warning(
+            "Strategy [%s] STDERR:\n%s",
+            client_str,
+            last_stderr
+        )
 
         if cookie_file and cookie_file.exists():
             cookie_file.unlink(missing_ok=True)
