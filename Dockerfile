@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY app.py .
 
+# app.py कॉपी होने के बाद yt-dlp का सबसे नया Nightly वर्ज़न इंस्टॉल करें (ताकि Docker कैश कभी पुराना वर्ज़न न रखे)
+RUN pip install --no-cache-dir -U --pre "yt-dlp[default]"
+
 RUN mkdir -p /tmp/clips \
     && chmod 700 /tmp/clips
 
