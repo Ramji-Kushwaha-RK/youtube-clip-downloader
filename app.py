@@ -313,6 +313,7 @@ def build_ytdlp_command(output_template, start, end, file_type, quality, clean_u
         "yt-dlp",
         "--ignore-config",
         "--verbose",
+        "--js-runtimes", "node:/usr/bin/node",
         "--no-playlist",
         "--no-progress",
         "--no-continue",
