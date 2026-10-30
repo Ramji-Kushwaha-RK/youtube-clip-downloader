@@ -337,15 +337,17 @@ def build_ytdlp_command(output_template, start, end, file_type, quality, clean_u
             "-x", "--audio-format", "m4a",
         ]
     elif file_type == "webm":
+        # अगर चुनी हुई क्वालिटी न मिले, तो किसी भी उपलब्ध webm क्वालिटी या बेस्ट को चुन ले
         cmd += [
             "-f",
-            f"bv*[height<={quality}][ext=webm]+ba[ext=webm]/b[height<={quality}][ext=webm]/bv*[height<={quality}]+ba/b[height<={quality}]/best",
+            f"bv*[height<={quality}][ext=webm]+ba/b[height<={quality}][ext=webm]/best[ext=webm]/best",
             "--merge-output-format", "webm",
         ]
     else:
+        # लचीला फॉर्मेट: अगर सीधी mp4 वीडियो+ऑडियो न मिले, तो जो भी बेस्ट मिले उसे मर्ज करके mp4 बना दे
         cmd += [
             "-f",
-            f"bv*[height<={quality}][ext=mp4]+ba[ext=m4a]/b[height<={quality}][ext=mp4]/bv*[height<={quality}]+ba/b[height<={quality}]/best",
+            f"bv*[height<={quality}]+ba/b[height<={quality}]/bestvideo+bestaudio/best",
             "--merge-output-format", "mp4",
         ]
 
