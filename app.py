@@ -479,7 +479,8 @@ def create_clip():
             use_cookie = None if "ios" in client_str else cookie_file
 
             cmd = build_ytdlp_command(
-                output_template, start, end, file_type, quality, clean_url, client_str, use_cookie
+                output_template, start, end, file_type, quality,
+                clean_url, client_str, use_cookie
             )
 
             result = subprocess.run(
@@ -499,30 +500,30 @@ def create_clip():
             )
 
             if result.returncode == 0:
-    success = True
-    break
-else:
-    last_stderr = (result.stderr or "")[-10000:]
+                success = True
+                break
+            else:
+                last_stderr = (result.stderr or "")[-10000:]
 
-    app.logger.warning(
-        "Strategy [%s] failed. Return code: %s",
-        client_str,
-        result.returncode
-    )
+                app.logger.warning(
+                    "Strategy [%s] failed. Return code: %s",
+                    client_str,
+                    result.returncode
+                )
 
-    if result.stdout:
-        app.logger.warning(
-            "Strategy [%s] STDOUT:\n%s",
-            client_str,
-            result.stdout[-5000:]
-        )
+                if result.stdout:
+                    app.logger.warning(
+                        "Strategy [%s] STDOUT:\n%s",
+                        client_str,
+                        result.stdout[-5000:]
+                    )
 
-    if result.stderr:
-        app.logger.warning(
-            "Strategy [%s] STDERR:\n%s",
-            client_str,
-            last_stderr
-        )
+                if result.stderr:
+                    app.logger.warning(
+                        "Strategy [%s] STDERR:\n%s",
+                        client_str,
+                        last_stderr
+                    )
 
         if cookie_file and cookie_file.exists():
             cookie_file.unlink(missing_ok=True)
