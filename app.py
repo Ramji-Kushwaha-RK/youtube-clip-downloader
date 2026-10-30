@@ -324,7 +324,11 @@ def build_ytdlp_command(output_template, start, end, file_type, quality, clean_u
         "--fragment-retries", "3",
         "--extractor-retries", "3",
         "--max-filesize", "500M",
-        "--download-sections", f"*{start}-{end}",
+        # Use FFmpeg as the downloader and trim at the input, matching the
+        # working Termux command. This supports clips from the middle of long videos.
+        "--downloader", "ffmpeg",
+        "--downloader-args",
+        f"ffmpeg_i:-ss {time.strftime('%H:%M:%S', time.gmtime(start))} -to {time.strftime('%H:%M:%S', time.gmtime(end))}",
         "--output", output_template,
     ]
 
@@ -456,22 +460,12 @@ def create_clip():
         cookie_file = write_valid_netscape_cookies(job_dir / "cookies.txt")
         output_template = str(job_dir / "clip.%(ext)s")
 
-        # YouTube currently restricts formats for several player clients.
-        # Try mweb first with the BgUtils PO-token provider, then use
-        # web_safari (which may expose HLS formats), and finally yt-dlp defaults.
+        # Try web_safari first (can expose HLS streams), then yt-dlp's
+        # default clients, and use mweb/PO-token as a final fallback.
         if cookie_file:
-            client_strategies = [
-                "mweb",
-                "web_safari",
-                "web_creator",
-                "default",
-            ]
+            client_strategies = ["web_safari", "web_creator", "default", "mweb"]
         else:
-            client_strategies = [
-                "mweb",
-                "web_safari",
-                "default",
-            ]
+            client_strategies = ["web_safari", "default", "mweb"]
 
         last_stderr = ""
         success = False
@@ -504,7 +498,8 @@ def create_clip():
                 success = True
                 break
             else:
-                last_stderr = (result.stderr or "")[-10000:]
+                combined_log = (result.stdout or "") + "\n" + (result.stderr or "")
+                last_stderr = combined_log[-10000:]
 
                 app.logger.warning(
                     "Strategy [%s] failed. Return code: %s",
@@ -526,12 +521,23 @@ def create_clip():
                         last_stderr
                     )
 
+                # A 429 is a rate-limit response from YouTube. Repeating the
+                # same request through other clients can worsen the block.
+                if "HTTP Error 429" in last_stderr:
+                    app.logger.warning("YouTube returned HTTP 429; stopping client fallbacks.")
+                    break
+
         if cookie_file and cookie_file.exists():
             cookie_file.unlink(missing_ok=True)
 
         if not success:
             shutil.rmtree(job_dir, ignore_errors=True)
             job_dir = None
+
+            if "HTTP Error 429" in last_stderr:
+                return jsonify({
+                    "error": "YouTube ने Render सर्वर की requests पर अस्थायी सीमा (HTTP 429) लगाई है। सर्वर ने अतिरिक्त प्रयास रोक दिए हैं।"
+                }), 429
 
             if "Sign in to confirm" in last_stderr or "bot" in last_stderr.lower():
                 return jsonify({
