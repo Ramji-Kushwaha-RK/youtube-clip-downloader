@@ -37,7 +37,7 @@ CLIP_DIR = Path("/tmp/clips")
 CLIP_DIR.mkdir(parents=True, exist_ok=True)
 os.chmod(CLIP_DIR, 0o700)
 
-# आपकी नई सेटिंग्स: 30 मिनट क्लिप और प्रति घंटा 5 अनुरोध
+# आपकी सेटिंग्स: 30 मिनट क्लिप और प्रति घंटा 5 अनुरोध
 MAX_CLIP_SECONDS = 1800                  # अधिकतम 30 मिनट (1800 सेकंड)
 MAX_PROCESS_SECONDS = 900                # प्रोसेसिंग टाइमआउट (15 मिनट)
 MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB फाइल सीमा
@@ -229,6 +229,36 @@ def cleanup_loop():
 threading.Thread(target=cleanup_loop, daemon=True).start()
 
 
+def write_valid_netscape_cookies(raw_text, target_path):
+    """कुकीज़ टेक्स्ट को साफ करके 100% मान्य Netscape फॉर्मेट में सेव करता है।"""
+    if not raw_text:
+        return None
+
+    valid_lines = ["# Netscape HTTP Cookie File"]
+    for raw_line in raw_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        # यदि #HttpOnly_ से शुरू हो रहा है तो उसे रहने दें, बाकी कमेंट्स (#) हटा दें
+        if line.startswith("#") and not line.startswith("#HttpOnly_"):
+            continue
+
+        # यदि कॉपी-पेस्ट में Tab (\t) की जगह स्पेस आ गए हों, तो उन्हें ठीक करें
+        parts = line.split("\t")
+        if len(parts) != 7:
+            parts = line.split(None, 6)
+
+        if len(parts) == 7:
+            valid_lines.append("\t".join(parts))
+
+    if len(valid_lines) <= 1:
+        return None
+
+    target_path.write_text("\n".join(valid_lines) + "\n", encoding="utf-8")
+    os.chmod(target_path, 0o600)
+    return target_path
+
+
 @app.after_request
 def security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -361,27 +391,36 @@ def create_clip():
         job_dir = CLIP_DIR / job_id
         job_dir.mkdir(mode=0o700)
 
-        cookie_file = None
-        if YOUTUBE_COOKIES_TEXT:
-            cookie_file = job_dir / "cookies.txt"
-            cookie_file.write_text(YOUTUBE_COOKIES_TEXT, encoding="utf-8")
-            os.chmod(cookie_file, 0o600)
+        # कुकीज़ को ऑटो-रिपेयर और Netscape हेडर के साथ सेव करें
+        cookie_file = write_valid_netscape_cookies(
+            YOUTUBE_COOKIES_TEXT, job_dir / "cookies.txt"
+        )
 
         output_template = str(job_dir / "clip.%(ext)s")
 
-        # सभी चैनलों की वीडियो चलाने के लिए 3 अलग-अलग मोबाइल/टीवी क्लाइंट्स से ऑटो-रिट्राई
-        client_strategies = [
-            "ios,web_creator",
-            "android,tv_embedded",
-            "mweb,web",
-        ]
+        # यदि कुकीज़ लगी हैं तो web/mweb क्लाइंट सबसे पहले काम करेंगे
+        if cookie_file:
+            client_strategies = [
+                "web,mweb",
+                "tv_embedded,web_creator",
+                "ios,android",
+            ]
+        else:
+            client_strategies = [
+                "ios,web_creator",
+                "android,tv_embedded",
+                "mweb,web",
+            ]
 
         last_stderr = ""
         success = False
 
         for client_str in client_strategies:
+            # ios क्लाइंट कुकीज़ सपोर्ट नहीं करता, इसलिए उस पर बिना कुकीज़ के प्रयास करें
+            use_cookie = None if "ios" in client_str else cookie_file
+
             cmd = build_ytdlp_command(
-                output_template, start, end, file_type, quality, clean_url, client_str, cookie_file
+                output_template, start, end, file_type, quality, clean_url, client_str, use_cookie
             )
 
             result = subprocess.run(
@@ -416,7 +455,7 @@ def create_clip():
 
             if "Sign in to confirm" in last_stderr or "bot" in last_stderr.lower():
                 return jsonify({
-                    "error": "YouTube ने क्लाउड सर्वर IP पर बॉट-जाँच (Bot Check) लगाई है। इसे 100% खोलने के लिए Render Environment में YOUTUBE_COOKIES जोड़ें।"
+                    "error": "YouTube ने क्लाउड सर्वर IP पर बॉट-जाँच (Bot Check) लगाई है। कृपया Render में अपनी YOUTUBE_COOKIES को ताज़ा (Refresh) करें।"
                 }), 422
 
             return jsonify({
