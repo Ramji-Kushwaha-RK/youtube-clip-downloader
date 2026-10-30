@@ -46,7 +46,7 @@ FILE_TTL_SECONDS = 30 * 60
 MAX_REQUESTS_PER_HOUR = 5
 
 ALLOWED_FORMATS = {"mp4", "mp3", "webm", "m4a"}
-ALLOWED_QUALITIES = {"360", "480", "720", "1080"}
+ALLOWED_QUALITIES = {"best", "360", "480", "720", "1080"}
 
 ALLOWED_HOSTS = {
     "youtube.com",
@@ -302,6 +302,12 @@ def health():
 
 
 def build_ytdlp_command(output_template, start, end, file_type, quality, clean_url, player_client, cookie_file=None):
+    """
+    Download whatever YouTube formats are available.
+    - A selected resolution is preferred, but if it is unavailable, fall back
+      to the best available stream instead of failing.
+    - MP4 is recoded to MP4 when necessary; MP3/M4A are converted by FFmpeg.
+    """
     cmd = [
         "yt-dlp",
         "--ignore-config",
@@ -311,9 +317,10 @@ def build_ytdlp_command(output_template, start, end, file_type, quality, clean_u
         "--no-continue",
         "--no-part",
         "--geo-bypass",
-        "--socket-timeout", "20",
-        "--retries", "2",
-        "--fragment-retries", "2",
+        "--socket-timeout", "30",
+        "--retries", "3",
+        "--fragment-retries", "3",
+        "--extractor-retries", "3",
         "--max-filesize", "500M",
         "--download-sections", f"*{start}-{end}",
         "--output", output_template,
@@ -324,6 +331,17 @@ def build_ytdlp_command(output_template, start, end, file_type, quality, clean_u
 
     if cookie_file and cookie_file.is_file():
         cmd += ["--cookies", str(cookie_file)]
+
+    # Build a forgiving format selector. A requested resolution is tried first;
+    # if that resolution/combination is missing, yt-dlp tries the best available.
+    if quality == "best":
+        video_selector = "bestvideo*+bestaudio/best"
+    else:
+        video_selector = (
+            f"bv*[height<={quality}]+ba/"
+            f"b[height<={quality}]/"
+            "bestvideo*+bestaudio/best"
+        )
 
     if file_type == "mp3":
         cmd += [
@@ -337,18 +355,30 @@ def build_ytdlp_command(output_template, start, end, file_type, quality, clean_u
             "-x", "--audio-format", "m4a",
         ]
     elif file_type == "webm":
-        # अगर चुनी हुई क्वालिटी न मिले, तो किसी भी उपलब्ध webm क्वालिटी या बेस्ट को चुन ले
+        # Prefer WebM streams, but fall back to any available stream and convert.
+        if quality == "best":
+            webm_selector = (
+                "bv*[ext=webm]+ba[ext=webm]/"
+                "b[ext=webm]/bestvideo*+bestaudio/best"
+            )
+        else:
+            webm_selector = (
+                f"bv*[height<={quality}][ext=webm]+ba[ext=webm]/"
+                f"b[height<={quality}][ext=webm]/"
+                "bestvideo*+bestaudio/best"
+            )
         cmd += [
-            "-f",
-            f"bv*[height<={quality}][ext=webm]+ba/b[height<={quality}][ext=webm]/best[ext=webm]/best",
+            "-f", webm_selector,
             "--merge-output-format", "webm",
+            "--recode-video", "webm",
         ]
     else:
-        # लचीला फॉर्मेट: अगर सीधी mp4 वीडियो+ऑडियो न मिले, तो जो भी बेस्ट मिले उसे मर्ज करके mp4 बना दे
+        # MP4 output is created even when YouTube only provides another
+        # container/codec, provided FFmpeg supports the required conversion.
         cmd += [
-            "-f",
-            f"bv*[height<={quality}]+ba/b[height<={quality}]/bestvideo+bestaudio/best",
+            "-f", video_selector,
             "--merge-output-format", "mp4",
+            "--recode-video", "mp4",
         ]
 
     cmd.append(clean_url)
@@ -380,7 +410,7 @@ def create_clip():
         }), 400
 
     file_type = str(data.get("format", "mp4")).lower().strip()
-    quality = str(data.get("quality", "720")).lower().replace("p", "").strip()
+    quality = str(data.get("quality", "best")).lower().replace("p", "").strip()
 
     if file_type not in ALLOWED_FORMATS:
         return jsonify({"error": "चयनित फाइल फॉर्मेट मान्य नहीं है।"}), 400
